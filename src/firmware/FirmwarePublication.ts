@@ -28,6 +28,8 @@ const GAP_CONTINUATIONS: Record<ExtractionGap["kind"], string> = {
     "Rerun extract_firmware with a higher max_depth (up to 10) and a fresh output_directory to descend into this path.",
   "unpublished-entry":
     "The entry is retained as metadata; only regular files are published, without executable permission bits.",
+  "unexplained-region":
+    "No producer chunk claimed these bytes of the selection. If Binwalk is configured with REA_BINWALK_COMMAND, run inspect_firmware_regions on the same input for signature hypotheses; otherwise treat the region as unexamined rather than empty or corrupt.",
 };
 
 const UNNAMED_DEPENDENCY_CONTINUATION =
@@ -164,11 +166,13 @@ export const publishFirmwareExtraction = async (context: {
       derivations: context.normalized.derivations,
       depth_limited_paths: context.normalized.depth_limited_paths,
       diagnostics: context.normalized.diagnostics,
+      unexplained_regions: context.normalized.unexplained_regions,
       ...extractionGaps(
         unpublished,
         files,
         context.normalized,
         context.maxDepth,
+        context.selection.offset,
       ),
       published_bytes: files.reduce((sum, file) => sum + file.size, 0),
     });
@@ -305,6 +309,7 @@ const extractionGaps = (
   >["files"][number][],
   normalized: ReturnType<typeof normalizeUnblobReport>,
   maxDepth: number,
+  selectionOffset: number,
 ) => {
   // Intern before row construction: N gaps retain N identities, while K unique
   // recovery instructions consume prose only K times in the public result.
@@ -431,6 +436,18 @@ const extractionGaps = (
       relative_path: entry.relative_path,
       dependencies: [],
       continuation_id: continuation(GAP_CONTINUATIONS["unpublished-entry"]),
+    })),
+    ...normalized.unexplained_regions.map((region): ExtractionGap => ({
+      kind: "unexplained-region",
+      input_path: "$input",
+      ...emptyGap,
+      range: region,
+      root_file_range: {
+        offset: selectionOffset + region.offset,
+        length: region.length,
+      },
+      dependencies: [],
+      continuation_id: continuation(GAP_CONTINUATIONS["unexplained-region"]),
     })),
   ];
   gaps.sort((left, right) =>

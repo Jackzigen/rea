@@ -523,6 +523,31 @@ export const normalizeUnblobReport = (
       "extract_firmware",
       "Report contains tasks disconnected from the selected input",
     );
+  // Root-level chunks (direct children of the selected input) are marked by
+  // a non-null root_file_range. Their input-relative ranges explain the
+  // selection; whatever is left is an unexplained region, so an extraction
+  // that recognized nothing at all (unblob reports no whole-file unknown
+  // chunk in that case) can no longer claim complete coverage.
+  const rootRanges = chunks
+    .filter((chunk) => chunk.root_file_range !== null)
+    .map((chunk) => chunk.range)
+    .sort((left, right) => left.offset - right.offset);
+  const unexplained: { offset: number; length: number }[] = [];
+  let explained = 0;
+  for (const span of rootRanges) {
+    if (span.offset > explained)
+      unexplained.push({ offset: explained, length: span.offset - explained });
+    explained = Math.max(explained, span.offset + span.length);
+  }
+  if (explained < context.length)
+    unexplained.push({ offset: explained, length: context.length - explained });
+  const coverage =
+    unexplained.length > 0 ||
+    depths.length > 0 ||
+    diagnostics.length > 0 ||
+    chunks.some((c) => c.handler === null || c.encrypted === true)
+      ? ("partial" as const)
+      : ("complete" as const);
   return {
     files,
     sizes,
@@ -571,11 +596,11 @@ export const normalizeUnblobReport = (
             ? 1
             : 0,
       ),
-    coverage:
-      depths.length > 0 ||
-      diagnostics.length > 0 ||
-      chunks.some((c) => c.handler === null || c.encrypted === true)
-        ? ("partial" as const)
-        : ("complete" as const),
+    coverage,
+    /** Selected-byte regions no reported chunk claimed, in original-file
+     * coordinates; non-empty whenever coverage is partial for this reason. */
+    unexplained_regions: unexplained.sort((left, right) =>
+      left.offset < right.offset ? -1 : left.offset > right.offset ? 1 : 0,
+    ),
   };
 };

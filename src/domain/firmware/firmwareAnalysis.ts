@@ -106,6 +106,7 @@ export const extractionGap = z.strictObject({
     "depth-limited",
     "extractor-failure",
     "unpublished-entry",
+    "unexplained-region",
   ]),
   /** Logical task path from the producer report; `$output/…` for unpublished entries. */
   input_path: z.string(),
@@ -184,6 +185,9 @@ export const firmwareResultSchemas = {
     ),
     depth_limited_paths: z.array(z.string()),
     diagnostics: z.array(jsonValueSchema),
+    /** Selected-byte regions no reported chunk claimed, in input-relative
+     * coordinates; non-empty forces partial coverage. */
+    unexplained_regions: z.array(range),
     extraction_gaps: z.array(extractionGap),
     /** Each distinct recovery instruction is serialized once, shared by gap ID. */
     extraction_continuations: z.array(

@@ -938,3 +938,88 @@ describe("firmware producer boundaries", () => {
       ).toThrow();
   });
 });
+
+describe("unexplained selection coverage", () => {
+  const rootTaskWith = (reports: unknown[]) => ({
+    task: {
+      path: context.inputPath,
+      depth: 0,
+      blob_id: "",
+      is_multi_file: false,
+    },
+    reports: [
+      {
+        __typename__: "StatReport",
+        path: context.inputPath,
+        size: 20,
+        is_file: true,
+        is_dir: false,
+        is_link: false,
+        link_target: null,
+      },
+      { __typename__: "HashReport", sha256: context.sha256 },
+      ...reports,
+    ],
+    subtasks: [],
+  });
+
+  it("reports partial coverage and the full selection as unexplained when no chunk was recognized", () => {
+    const normalized = normalizeUnblobReport([rootTaskWith([])], context);
+    expect(normalized.coverage).toBe("partial");
+    expect(normalized.unexplained_regions).toEqual([{ offset: 0, length: 20 }]);
+  });
+
+  it("reports only the bytes no root chunk claimed as unexplained", () => {
+    const normalized = normalizeUnblobReport(
+      [
+        rootTaskWith([
+          {
+            __typename__: "ChunkReport",
+            id: "known",
+            start_offset: 8,
+            end_offset: 20,
+            size: 12,
+            handler_name: "gzip",
+            is_encrypted: false,
+            extraction_reports: [],
+          },
+        ]),
+      ],
+      context,
+    );
+    expect(normalized.coverage).toBe("partial");
+    expect(normalized.unexplained_regions).toEqual([{ offset: 0, length: 8 }]);
+  });
+
+  it("reports no unexplained region when root chunks tile the selection", () => {
+    const normalized = normalizeUnblobReport(
+      [
+        rootTaskWith([
+          {
+            __typename__: "ChunkReport",
+            id: "first",
+            start_offset: 0,
+            end_offset: 10,
+            size: 10,
+            handler_name: "gzip",
+            is_encrypted: false,
+            extraction_reports: [],
+          },
+          {
+            __typename__: "ChunkReport",
+            id: "second",
+            start_offset: 10,
+            end_offset: 20,
+            size: 10,
+            handler_name: "lzma",
+            is_encrypted: false,
+            extraction_reports: [],
+          },
+        ]),
+      ],
+      context,
+    );
+    expect(normalized.unexplained_regions).toEqual([]);
+    expect(normalized.coverage).toBe("complete");
+  });
+});

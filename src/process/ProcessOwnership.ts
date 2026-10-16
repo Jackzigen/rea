@@ -129,6 +129,15 @@ interface ProcessOwnershipValidationFailure {
     | "run-token-mismatch"
     | "process-identity-unavailable";
   readonly diagnostic?: string;
+  /**
+   * The token read was readable but exposed no run token at all. On Linux an
+   * owned member that exits between the process-table snapshot and the token
+   * read still presents a readable-but-empty /proc/<pid>/environ, so the
+   * mismatch is an exit artifact rather than foreign-token evidence and may
+   * be cleared by a liveness recheck. A readable foreign token keeps the
+   * unflagged mismatch and is never cleared.
+   */
+  readonly tokenAbsent?: true;
 }
 
 /**
@@ -796,7 +805,15 @@ const processRunTokenFailures = async (
   )) {
     if (observation.state === "readable") {
       if (observation.runId !== runId)
-        failures.push({ pid: member.pid, reason: "run-token-mismatch" });
+        failures.push(
+          observation.runId === undefined
+            ? {
+                pid: member.pid,
+                reason: "run-token-mismatch",
+                tokenAbsent: true,
+              }
+            : { pid: member.pid, reason: "run-token-mismatch" },
+        );
       continue;
     }
     failures.push({
@@ -811,13 +828,23 @@ const processRunTokenFailures = async (
 /**
  * Take a fresh liveness snapshot after each ownership-read phase. Only an
  * absent PID resolves an unreadable observation; a readable token mismatch
- * remains a failure. Never reuse this snapshot across identity/token reads.
+ * remains a failure, except a readable-but-empty token read (tokenAbsent):
+ * on Linux an owned member that exits between the snapshot and the token
+ * read presents an empty /proc/<pid>/environ, so its "mismatch" is an exit
+ * artifact that a fresh process table can clear. Never reuse this snapshot
+ * across identity/token reads.
  */
 const recheckOwnershipFailures = async (
   failures: readonly ProcessOwnershipValidationFailure[],
   host: ProcessOwnershipHost,
 ): Promise<readonly ProcessOwnershipValidationFailure[]> => {
-  if (!failures.some(({ reason }) => reason !== "run-token-mismatch"))
+  if (failures.length === 0) return failures;
+  if (
+    !failures.some(
+      ({ reason, tokenAbsent }) =>
+        reason !== "run-token-mismatch" || tokenAbsent === true,
+    )
+  )
     return failures;
   try {
     let processes = await host.listProcesses();
@@ -842,7 +869,9 @@ const recheckOwnershipFailures = async (
     }
     const live = new Set(liveProcesses(processes).map(({ pid }) => pid));
     return failures.filter(
-      ({ pid, reason }) => reason === "run-token-mismatch" || live.has(pid),
+      ({ pid, reason, tokenAbsent }) =>
+        (reason === "run-token-mismatch" && tokenAbsent !== true) ||
+        live.has(pid),
     );
   } catch (cause: unknown) {
     return failures.map((failure) =>

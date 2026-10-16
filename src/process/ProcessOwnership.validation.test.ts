@@ -154,6 +154,72 @@ describe("owned process-group cleanup validation: ownership and lineage", () => 
   });
 });
 
+describe("owned process-group cleanup absent-token mismatches", () => {
+  it("clears an absent-token mismatch for a member that exited before the token read", async () => {
+    const members = [100, 101].map((pid) => ({
+      pid,
+      parentPid: pid === 100 ? 1 : 100,
+      processGroupId: 100,
+      state: "S",
+      command: "fixture",
+    }));
+    // The first snapshot still lists PID 101; the fresh liveness recheck (and
+    // later signaling revalidation) no longer shows it. On Linux a member
+    // that exits between the snapshot and the token read presents a
+    // readable-but-empty /proc/<pid>/environ, which the token phase must
+    // not treat as durable foreign-token evidence.
+    const listProcesses = vi
+      .fn<ProcessOwnershipHost["listProcesses"]>()
+      .mockResolvedValueOnce(members)
+      .mockResolvedValue([members[0]!]);
+    const signalGroup = vi.fn();
+    const adapter: ProcessOwnershipHost = {
+      listProcesses,
+      environment: async (pid) => {
+        if (pid === 101) return {};
+        return { REA_PROCESS_RUN_ID: "run-token" };
+      },
+      signalGroup,
+    };
+    await expect(cleanupOwnedProcessGroup(ownership, adapter)).resolves.toEqual(
+      { cleaned: true, signaled: true },
+    );
+    expect(signalGroup).toHaveBeenCalledWith(100, "SIGKILL");
+  });
+  it("retains a foreign-token mismatch even when the member has exited", async () => {
+    const members = [100, 101].map((pid) => ({
+      pid,
+      parentPid: pid === 100 ? 1 : 100,
+      processGroupId: 100,
+      state: "S",
+      command: "fixture",
+    }));
+    // PID 101 exposes a readable foreign run token and then exits; the
+    // mismatch is durable evidence and must survive the liveness recheck.
+    const listProcesses = vi
+      .fn<ProcessOwnershipHost["listProcesses"]>()
+      .mockResolvedValueOnce(members)
+      .mockResolvedValue([members[0]!]);
+    const signalGroup = vi.fn();
+    const adapter: ProcessOwnershipHost = {
+      listProcesses,
+      environment: async (pid) => {
+        if (pid === 101) return { REA_PROCESS_RUN_ID: "other-run" };
+        return { REA_PROCESS_RUN_ID: "run-token" };
+      },
+      signalGroup,
+    };
+    await expect(cleanupOwnedProcessGroup(ownership, adapter)).resolves.toEqual(
+      {
+        cleaned: false,
+        reason: "process ownership token mismatch for PID(s): 101",
+        failures: [{ pid: 101, reason: "run-token-mismatch" }],
+      },
+    );
+    expect(signalGroup).not.toHaveBeenCalled();
+  });
+});
+
 describe("owned process-group cleanup liveness rechecks", () => {
   it("rechecks all unreadable members after the token phase in one fresh snapshot", async () => {
     const members = [100, 101, 102, 103].map((pid) => ({
